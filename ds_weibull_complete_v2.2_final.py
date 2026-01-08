@@ -1598,11 +1598,12 @@ def _profile_ci_for_cdf_jmp(t: float,
     z_mle = (ln_t - mle_mu) / mle_sigma
     F_mle = mle_p * (1 - np.exp(-np.exp(z_mle)))
     
-    # F/DS に応じた動的χ²臨界値（JMPの結果から推定）
-    # 下側: χ²_lo ≈ 0.42 * (F/DS) + 2.90
-    # 上側: 固定値を使用
+    # F/DS に応じた動的χ²臨界値（JMPの結果から線形回帰で推定）
+    # 下側: χ²_lo = 2.9216 + 0.3572 * (F/DS)  (R² = 0.952)
+    # 上側: χ²_up = 5.3859 - 0.9235 * (F/DS)  (R² = 0.931)
     F_rel = F_mle / mle_DS
-    chi2_lower_dynamic = 0.42 * F_rel + 2.90
+    chi2_lower_dynamic = 2.9216 + 0.3572 * F_rel
+    chi2_upper_dynamic = 5.3859 - 0.9235 * F_rel
     
     def profile_ll_at_F(F_target):
         """F(t) = F_target を固定したプロファイル尤度"""
@@ -1648,30 +1649,35 @@ def _profile_ci_for_cdf_jmp(t: float,
     
     # 下側限界の探索（動的χ²臨界値を使用）
     ll_threshold_lower = mle_loglik - chi2_lower_dynamic / 2
-    
-    F_grid_lower = np.linspace(max(1e-4, F_mle * 0.05), F_mle * 0.95, n_grid)
+
+    # 低いFから高いFへ探索し、ll >= threshold となる最小のFを見つける
+    F_grid_lower = np.linspace(max(1e-4, F_mle * 0.01), F_mle * 0.95, n_grid)
     F_lower = F_grid_lower[0]
-    
-    for F_val in reversed(F_grid_lower):
+
+    # 低いFから順に探索
+    for F_val in F_grid_lower:
         ll = profile_ll_at_F(F_val)
         if ll >= ll_threshold_lower:
             F_lower = F_val
             break
-    
-    # 二分探索で精密化
-    lo, hi = max(1e-4, F_lower * 0.7), F_lower
-    for _ in range(25):
+
+    # 二分探索で精密化（F_lowerより少し下から探索）
+    lo, hi = max(1e-4, F_lower * 0.5), F_lower
+    for _ in range(30):
         mid = (lo + hi) / 2
-        if profile_ll_at_F(mid) >= ll_threshold_lower:
+        ll_mid = profile_ll_at_F(mid)
+        if ll_mid >= ll_threshold_lower:
+            # midでも条件を満たす -> もっと下を探す
             hi = mid
             F_lower = mid
         else:
+            # midでは条件を満たさない -> 上を探す
             lo = mid
-        if hi - lo < 1e-5:
+        if hi - lo < 1e-6:
             break
     
-    # 上側限界の探索（固定χ²臨界値を使用）
-    ll_threshold_upper = mle_loglik - chi2_upper / 2
+    # 上側限界の探索（動的χ²臨界値を使用）
+    ll_threshold_upper = mle_loglik - chi2_upper_dynamic / 2
     
     F_grid_upper = np.linspace(F_mle * 1.02, 0.9999, n_grid)
     F_upper = F_mle
@@ -1767,13 +1773,13 @@ def profile_likelihood_cdf_bounds(t: Union[float, np.ndarray],
     F_upper = np.zeros(n_t)
     
     # JMP互換モード用の修正χ²臨界値
-    # JMPは signed root likelihood ratio または修正プロファイル尤度を使用
-    # JMPの結果から逆算した臨界値:
-    #   - 下側限界: χ² ≈ 3.1-3.3 (F が小さい方向)
-    #   - 上側限界: χ² ≈ 4.5-4.9 (F が大きい方向)
+    # JMPの結果から線形回帰で推定した動的χ²臨界値を使用:
+    #   - 下側限界: χ² = 2.9216 + 0.3572 * (F/DS)  (R² = 0.952)
+    #   - 上側限界: χ² = 5.3859 - 0.9235 * (F/DS)  (R² = 0.931)
+    # 動的臨界値は _profile_ci_for_cdf_jmp 関数内で計算される
     if jmp_compatible:
-        chi2_crit_lower = 3.20  # 下側限界用（より狭い）
-        chi2_crit_upper = 4.70  # 上側限界用（より広い）
+        chi2_crit_lower = None  # 動的計算（関数内で F/DS に応じて決定）
+        chi2_crit_upper = None  # 動的計算（関数内で F/DS に応じて決定）
     else:
         chi2_crit = stats.chi2.ppf(confidence, df=1)
         chi2_crit_lower = chi2_crit
