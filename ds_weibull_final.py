@@ -751,6 +751,170 @@ class DSWeibullAnalysis:
         """B50寿命（50%故障時間）"""
         return self.quantile(0.50)
 
+    # ==========================================================================
+    # プロット機能
+    # ==========================================================================
+
+    def plot_cdf(self,
+                 t_range: Optional[Tuple[float, float]] = None,
+                 n_points: int = 200,
+                 method: str = 'delta',
+                 confidence: Optional[float] = None,
+                 show_data: bool = True,
+                 title: Optional[str] = None,
+                 xlabel: str = 'Time',
+                 ylabel: str = 'DS Weibull CDF',
+                 figsize: Tuple[float, float] = (10, 7),
+                 save_path: Optional[str] = None,
+                 dpi: int = 150,
+                 show: bool = True,
+                 lang: str = 'en') -> 'plt.Figure':
+        """
+        累積故障率と信頼区間をプロット（JMPスタイル）
+
+        Parameters
+        ----------
+        t_range : tuple, optional
+            時間範囲 (t_min, t_max)。Noneの場合は自動設定
+        n_points : int
+            プロット点数
+        method : str
+            信頼区間の計算方法: 'delta' または 'profile'
+        confidence : float, optional
+            信頼水準（デフォルトは初期化時の値）
+        show_data : bool
+            故障データ点を表示するか
+        title : str, optional
+            グラフタイトル
+        xlabel, ylabel : str
+            軸ラベル
+        figsize : tuple
+            図のサイズ
+        save_path : str, optional
+            保存先パス（Noneの場合は保存しない）
+        dpi : int
+            保存時の解像度
+        show : bool
+            plt.show()を呼ぶか
+        lang : str
+            言語: 'en' (英語) または 'ja' (日本語)
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            図オブジェクト
+        """
+        import matplotlib.pyplot as plt
+
+        # 日本語フォント設定
+        if lang == 'ja':
+            try:
+                import matplotlib
+                matplotlib.rcParams['font.family'] = ['IPAexGothic', 'IPAPGothic', 'Hiragino Sans', 'Yu Gothic', 'Meiryo', 'sans-serif']
+            except:
+                pass
+
+        confidence = confidence or self.confidence
+
+        # 時間範囲の自動設定
+        if t_range is None:
+            t_min = self.failures.min() * 0.5
+            t_max_data = max(self.failures.max(),
+                            self.right_censored.max() if self.right_censored is not None else 0)
+            t_max = t_max_data * 1.3
+        else:
+            t_min, t_max = t_range
+
+        # 時間点の生成
+        t_plot = np.linspace(t_min, t_max, n_points)
+
+        # CDF計算
+        F = self.cdf(t_plot)
+
+        # 信頼区間計算
+        if method.lower() == 'delta':
+            _, F_lower, F_upper = self.cdf_confidence_interval_delta(t_plot, confidence)
+            method_label = 'Delta' if lang == 'en' else 'Delta法'
+        elif method.lower() == 'profile':
+            _, F_lower, F_upper = self.cdf_confidence_interval_profile(t_plot, confidence)
+            method_label = 'Profile Likelihood' if lang == 'en' else 'プロファイル尤度法'
+        else:
+            raise ValueError(f"method must be 'delta' or 'profile', got '{method}'")
+
+        # ラベル設定
+        if lang == 'en':
+            ci_label = f'{confidence*100:.0f}% CI ({method_label})'
+            cdf_label = 'CDF F(t)'
+            failure_label = 'Failures'
+            censored_label = 'Censored'
+        else:
+            ci_label = f'{confidence*100:.0f}% 信頼区間 ({method_label})'
+            cdf_label = '累積故障率 F(t)'
+            failure_label = '故障データ'
+            censored_label = '打ち切りデータ'
+
+        # プロット作成
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # 信頼区間（塗りつぶし）
+        ax.fill_between(t_plot, F_lower, F_upper,
+                        color='lightblue', alpha=0.7,
+                        label=ci_label)
+
+        # CDF曲線
+        ax.plot(t_plot, F, 'k-', linewidth=2, label=cdf_label)
+
+        # 下限・上限の境界線
+        ax.plot(t_plot, F_lower, 'b-', linewidth=1, alpha=0.7)
+        ax.plot(t_plot, F_upper, 'b-', linewidth=1, alpha=0.7)
+
+        # DS（最大故障率）の水平線
+        ax.axhline(y=self.result.DS, color='gray', linestyle='--', alpha=0.5,
+                   label=f'DS = {self.result.DS:.4f}')
+
+        # データ点の表示
+        if show_data:
+            # 故障データ（経験的CDF）
+            sorted_failures = np.sort(self.failures)
+            n = len(sorted_failures)
+            F_emp = (np.arange(1, n + 1) - 0.3) / (n + 0.4)
+            ax.scatter(sorted_failures, F_emp, c='red', s=50, zorder=5,
+                      marker='o', label=failure_label, edgecolors='darkred')
+
+            # 打ち切りデータ
+            if self.right_censored is not None and len(self.right_censored) > 0:
+                F_cens = self.cdf(self.right_censored)
+                ax.scatter(self.right_censored, F_cens, c='green', s=50, zorder=5,
+                          marker='>', label=censored_label, edgecolors='darkgreen')
+
+        # 軸設定
+        ax.set_xlim(t_min, t_max)
+        ax.set_ylim(0, 1.0)
+        ax.set_xlabel(xlabel, fontsize=12)
+        ax.set_ylabel(ylabel, fontsize=12)
+
+        # タイトル
+        if title is None:
+            title = f'DS Weibull CDF (alpha={self.result.alpha:.2f}, beta={self.result.beta:.2f}, DS={self.result.DS:.3f})'
+        ax.set_title(title, fontsize=14)
+
+        # グリッドと凡例
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='lower right', fontsize=10)
+
+        plt.tight_layout()
+
+        # 保存
+        if save_path:
+            fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+            print(f"Saved: {save_path}")
+
+        # 表示
+        if show:
+            plt.show()
+
+        return fig
+
 
 # ==============================================================================
 # テスト関数
