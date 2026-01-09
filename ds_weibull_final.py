@@ -751,6 +751,51 @@ class DSWeibullAnalysis:
         """B50寿命（50%故障時間）"""
         return self.quantile(0.50)
 
+    def _kaplan_meier_cdf(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        打ち切りを考慮したメディアンランク（Bernard近似）による経験的CDF計算
+
+        JMPと同様の方法で打ち切りデータを考慮した経験的累積故障率を計算
+
+        Returns
+        -------
+        t_failure : ndarray
+            故障時間
+        F_emp : ndarray
+            経験的CDF推定値（メディアンランク）
+        """
+        # 全データを結合（故障=1、打ち切り=0）
+        times = list(self.failures)
+        events = [1] * len(self.failures)
+
+        if self.right_censored is not None and len(self.right_censored) > 0:
+            times.extend(self.right_censored)
+            events.extend([0] * len(self.right_censored))
+
+        # 時間順にソート（同時刻では故障を先に）
+        data = sorted(zip(times, events), key=lambda x: (x[0], -x[1]))
+        n_total = len(data)
+
+        # 調整ランク（Johnson's method for censored data）
+        t_failure = []
+        ranks = []
+
+        prev_rank = 0
+        for i, (t, event) in enumerate(data):
+            reverse_rank = n_total - i
+            if event == 1:  # 故障
+                increment = (n_total + 1 - prev_rank) / (reverse_rank + 1)
+                new_rank = prev_rank + increment
+                t_failure.append(t)
+                ranks.append(new_rank)
+                prev_rank = new_rank
+
+        # メディアンランク（Bernard近似）: (rank - 0.3) / (n + 0.4)
+        ranks = np.array(ranks)
+        F_emp = (ranks - 0.3) / (n_total + 0.4)
+
+        return np.array(t_failure), F_emp
+
     # ==========================================================================
     # プロット機能
     # ==========================================================================
@@ -842,13 +887,11 @@ class DSWeibullAnalysis:
         # CDF曲線（黒）
         ax.plot(t_plot, F, 'k-', linewidth=2)
 
-        # 故障データ点の表示（経験的CDF位置）
+        # 故障データ点の表示（Kaplan-Meier推定量）
         if show_data:
-            sorted_failures = np.sort(self.failures)
-            n = len(sorted_failures)
-            # 経験的CDF（Hazen plotting position）
-            F_emp = (np.arange(1, n + 1) - 0.5) / n
-            ax.scatter(sorted_failures, F_emp, c='black', s=30, zorder=5, marker='o')
+            # Kaplan-Meier推定量で経験的CDFを計算（打ち切りデータを考慮）
+            t_km, F_km = self._kaplan_meier_cdf()
+            ax.scatter(t_km, F_km, c='black', s=30, zorder=5, marker='o')
 
         # 軸設定
         ax.set_xlim(t_min, t_max)
