@@ -615,8 +615,8 @@ class DSWeibullAnalysis:
 
         return F, F_lower, F_upper
 
-    def _profile_ci_single(self, t: float, n_grid: int = 50) -> Tuple[float, float, float]:
-        """単一時点でのプロファイル尤度信頼区間"""
+    def _profile_ci_single(self, t: float, n_grid: int = 15) -> Tuple[float, float, float]:
+        """単一時点でのプロファイル尤度信頼区間（高速化版）"""
         mu = self.result.mu
         sigma = self.result.sigma
         p = self.result.p
@@ -634,8 +634,16 @@ class DSWeibullAnalysis:
         failures = self.failures
         right_censored = self.right_censored
 
+        # キャッシュ用
+        _cache = {}
+
         def profile_ll_at_F(F_target):
-            """F(t) = F_target を固定したプロファイル尤度"""
+            """F(t) = F_target を固定したプロファイル尤度（高速化版）"""
+            # キャッシュチェック
+            cache_key = round(F_target, 6)
+            if cache_key in _cache:
+                return _cache[cache_key]
+
             if F_target <= 0 or F_target >= 1:
                 return -np.inf
 
@@ -658,27 +666,36 @@ class DSWeibullAnalysis:
                 ll = _loglik_location_scale(mu_val, sig, p_val, failures, right_censored)
                 return -ll if np.isfinite(ll) else 1e20
 
+            # MLE値を初期値として使用（高速化）
             best_ll = -np.inf
-            for sig in np.linspace(0.3, 1.5, 7):
-                for p_val in np.linspace(max(F_target + 0.02, 0.4), 0.999, 7):
-                    try:
-                        res = optimize.minimize(
-                            objective, [sig, p_val],
-                            method='L-BFGS-B',
-                            bounds=[(0.05, 5.0), (F_target + 0.001, 1.0)],
-                            options={'maxiter': 1000, 'ftol': 1e-12}
-                        )
-                        ll = -res.fun
-                        if ll > best_ll and np.isfinite(ll):
-                            best_ll = ll
-                    except:
-                        continue
+            init_points = [
+                (sigma, p),  # MLE値
+                (sigma * 0.8, min(0.99, p * 1.1)),
+                (sigma * 1.2, max(F_target + 0.01, p * 0.9)),
+            ]
 
+            for sig_init, p_init in init_points:
+                if p_init <= F_target:
+                    continue
+                try:
+                    res = optimize.minimize(
+                        objective, [sig_init, p_init],
+                        method='L-BFGS-B',
+                        bounds=[(0.05, 5.0), (F_target + 0.001, 1.0)],
+                        options={'maxiter': 500, 'ftol': 1e-10}
+                    )
+                    ll = -res.fun
+                    if ll > best_ll and np.isfinite(ll):
+                        best_ll = ll
+                except:
+                    continue
+
+            _cache[cache_key] = best_ll
             return best_ll
 
-        # 下側限界の探索
+        # 下側限界の探索（グリッド数削減）
         ll_threshold_lower = mle_loglik - chi2_lower / 2
-        F_grid_lower = np.linspace(max(1e-4, F_mle * 0.01), F_mle * 0.95, n_grid)
+        F_grid_lower = np.linspace(max(1e-4, F_mle * 0.05), F_mle * 0.9, n_grid)
         F_lower = F_grid_lower[0]
 
         for F_val in F_grid_lower:
@@ -687,21 +704,21 @@ class DSWeibullAnalysis:
                 F_lower = F_val
                 break
 
-        # 二分探索で精密化
+        # 二分探索で精密化（イテレーション数削減）
         lo, hi = max(1e-4, F_lower * 0.5), F_lower
-        for _ in range(30):
+        for _ in range(15):
             mid = (lo + hi) / 2
             if profile_ll_at_F(mid) >= ll_threshold_lower:
                 hi = mid
                 F_lower = mid
             else:
                 lo = mid
-            if hi - lo < 1e-6:
+            if hi - lo < 1e-5:
                 break
 
         # 上側限界の探索
         ll_threshold_upper = mle_loglik - chi2_upper / 2
-        F_grid_upper = np.linspace(F_mle * 1.02, 0.9999, n_grid)
+        F_grid_upper = np.linspace(F_mle * 1.05, 0.999, n_grid)
         F_upper = F_mle
 
         for F_val in F_grid_upper:
@@ -712,15 +729,15 @@ class DSWeibullAnalysis:
             F_upper = F_val
 
         # 二分探索で精密化
-        lo, hi = F_upper * 0.98, min(0.9999, F_upper * 1.05)
-        for _ in range(30):
+        lo, hi = F_upper * 0.95, min(0.999, F_upper * 1.02)
+        for _ in range(15):
             mid = (lo + hi) / 2
             if profile_ll_at_F(mid) >= ll_threshold_upper:
                 lo = mid
                 F_upper = mid
             else:
                 hi = mid
-            if hi - lo < 1e-6:
+            if hi - lo < 1e-5:
                 break
 
         return F_mle, F_lower, F_upper
