@@ -936,6 +936,164 @@ class DSWeibullAnalysis:
 
         return fig
 
+    def plot_cdf_plotly(self,
+                        t_range: Optional[Tuple[float, float]] = None,
+                        n_points: int = 200,
+                        method: str = 'delta',
+                        confidence: Optional[float] = None,
+                        show_data: bool = True,
+                        title: Optional[str] = None,
+                        xlabel: str = 'Time',
+                        ylabel: str = 'Cumulative Probability',
+                        save_path: Optional[str] = None,
+                        show: bool = True):
+        """
+        Plotlyで累積故障率と信頼区間をプロット（インタラクティブHTML）
+
+        Parameters
+        ----------
+        t_range : tuple, optional
+            時間範囲 (t_min, t_max)
+        n_points : int
+            プロット点数
+        method : str
+            信頼区間の計算方法: 'delta' または 'profile'
+        confidence : float, optional
+            信頼水準
+        show_data : bool
+            故障データ点を表示するか
+        title : str, optional
+            グラフタイトル
+        xlabel, ylabel : str
+            軸ラベル
+        save_path : str, optional
+            HTML保存先パス
+        show : bool
+            ブラウザで表示するか
+
+        Returns
+        -------
+        fig : plotly.graph_objects.Figure
+        """
+        import plotly.graph_objects as go
+
+        confidence = confidence or self.confidence
+
+        # 時間範囲の自動設定
+        if t_range is None:
+            t_min = 0
+            t_max_data = max(self.failures.max(),
+                            self.right_censored.max() if self.right_censored is not None else 0)
+            t_max = t_max_data * 1.2
+        else:
+            t_min, t_max = t_range
+
+        # 時間点の生成
+        t_plot = np.linspace(t_min, t_max, n_points)
+
+        # CDF計算
+        F = self.cdf(t_plot)
+
+        # 信頼区間計算
+        if method.lower() == 'delta':
+            _, F_lower, F_upper = self.cdf_confidence_interval_delta(t_plot, confidence)
+            method_name = 'Delta'
+        elif method.lower() == 'profile':
+            _, F_lower, F_upper = self.cdf_confidence_interval_profile(t_plot, confidence)
+            method_name = 'Profile Likelihood'
+        else:
+            raise ValueError(f"method must be 'delta' or 'profile', got '{method}'")
+
+        # Plotly図の作成
+        fig = go.Figure()
+
+        # 信頼区間（塗りつぶし）
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([t_plot, t_plot[::-1]]),
+            y=np.concatenate([F_upper, F_lower[::-1]]),
+            fill='toself',
+            fillcolor='rgba(180, 180, 180, 0.5)',
+            line=dict(color='rgba(255,255,255,0)'),
+            hoverinfo='skip',
+            showlegend=True,
+            name=f'{int(confidence*100)}% CI'
+        ))
+
+        # 下限境界線
+        fig.add_trace(go.Scatter(
+            x=t_plot, y=F_lower,
+            mode='lines',
+            line=dict(color='blue', width=1.5),
+            name='Lower CI',
+            hovertemplate='Time: %{x:.1f}<br>Lower: %{y:.4f}<extra></extra>'
+        ))
+
+        # 上限境界線
+        fig.add_trace(go.Scatter(
+            x=t_plot, y=F_upper,
+            mode='lines',
+            line=dict(color='blue', width=1.5),
+            name='Upper CI',
+            hovertemplate='Time: %{x:.1f}<br>Upper: %{y:.4f}<extra></extra>'
+        ))
+
+        # CDF曲線
+        fig.add_trace(go.Scatter(
+            x=t_plot, y=F,
+            mode='lines',
+            line=dict(color='black', width=2.5),
+            name='CDF',
+            hovertemplate='Time: %{x:.1f}<br>F(t): %{y:.4f}<extra></extra>'
+        ))
+
+        # 故障データ点
+        if show_data:
+            t_km, F_km = self._kaplan_meier_cdf()
+            fig.add_trace(go.Scatter(
+                x=t_km, y=F_km,
+                mode='markers',
+                marker=dict(color='black', size=8, symbol='circle'),
+                name='Failure Data',
+                hovertemplate='Time: %{x:.1f}<br>Empirical F: %{y:.4f}<extra></extra>'
+            ))
+
+        # レイアウト設定
+        plot_title = title or f'DS Weibull CDF ({method_name} Method, {int(confidence*100)}% CI)'
+        fig.update_layout(
+            title=dict(text=plot_title, font=dict(size=16)),
+            xaxis=dict(
+                title=xlabel,
+                range=[t_min, t_max],
+                gridcolor='lightgray',
+                zeroline=True
+            ),
+            yaxis=dict(
+                title=ylabel,
+                range=[0, 1],
+                gridcolor='lightgray',
+                zeroline=True
+            ),
+            plot_bgcolor='white',
+            hovermode='closest',
+            legend=dict(
+                yanchor='bottom',
+                y=0.01,
+                xanchor='right',
+                x=0.99
+            )
+        )
+
+        # 保存
+        if save_path:
+            fig.write_html(save_path)
+            print(f"Saved: {save_path}")
+
+        # 表示
+        if show:
+            fig.show()
+
+        return fig
+
 
 # ==============================================================================
 # テスト関数
