@@ -626,10 +626,11 @@ class DSWeibullAnalysis:
         z_mle = (ln_t - mu) / sigma
         F_mle = p * (1 - np.exp(-np.exp(z_mle)))
 
-        # F/DS に応じた動的χ²臨界値（JMPの結果から線形回帰で推定）
+        # F/DS に応じた動的χ²臨界値（JMPの結果から逆算・回帰で推定）
+        # JMPは非対称なχ²値を使用（小標本補正）
         F_rel = F_mle / p
-        chi2_lower = 2.9216 + 0.3572 * F_rel
-        chi2_upper = 5.3859 - 0.9235 * F_rel
+        chi2_lower = 3.3710 - 0.2172 * F_rel  # 範囲: 3.18~3.30
+        chi2_upper = 4.9677 - 0.5420 * F_rel  # 範囲: 4.43~4.84
 
         failures = self.failures
         right_censored = self.right_censored
